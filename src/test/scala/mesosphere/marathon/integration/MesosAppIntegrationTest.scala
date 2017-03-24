@@ -364,7 +364,7 @@ class MesosAppIntegrationTest
     deleteResult1.code should be (200)
 
     Then("The deleted instance should be restarted")
-    waitForStatusUpdates("TASK_KILLED", "TASK_RUNNING")
+    waitForStatusUpdates(Seq("TASK_KILLED", "TASK_RUNNING"))
     val status2 = marathon.status(pod.id)
     status2.code should be (200)
     status2.value.instances.filter(_.status == PodInstanceState.Stable) should have size 3

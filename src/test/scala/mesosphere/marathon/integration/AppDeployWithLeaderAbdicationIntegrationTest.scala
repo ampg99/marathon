@@ -91,13 +91,22 @@ class AppDeployWithLeaderAbdicationIntegrationTest extends AkkaIntegrationFunTes
     afterTaskIds should equal (updatedTaskIds)
   }
 
-  private def matchDeploymentSuccess(instanceCount: Int, appId: String): CallbackEvent => Boolean = { event =>
+  private def matchDeploymentSuccess(instanceCount: Int, appId: String): CallbackEvent => CallbackMatchResult = { event =>
     val infoString = event.info.toString()
-    event.eventType == "deployment_success" && infoString.contains(s"instances -> $instanceCount") && matchRestartApplication(infoString, appId)
+    if (event.eventType != "deployment_success")
+      CallbackMatchFailure("eventType was not deployment_success")
+    else if (!infoString.contains(s"instances -> $instanceCount"))
+      CallbackMatchFailure(s"event info did not contain string 'instances -> $instanceCount'")
+    else
+      matchRestartApplication(infoString, appId)
   }
 
-  private def matchRestartApplication(infoString: String, appId: String): Boolean = {
-    infoString.contains(s"List(Map(actions -> List(Map(action -> RestartApplication, app -> $appId)))))")
+  private def matchRestartApplication(infoString: String, appId: String): CallbackMatchResult = {
+    val expectedString = s"List(Map(actions -> List(Map(action -> RestartApplication, app -> $appId)))))"
+    if (infoString.contains(expectedString))
+      CallbackMatchSuccess
+    else
+      CallbackMatchFailure(s"event info did not contain '${expectedString}'")
   }
 
   private lazy val healthCheck: MarathonHttpHealthCheck = MarathonHttpHealthCheck(

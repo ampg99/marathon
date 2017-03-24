@@ -97,7 +97,7 @@ class AppDeployIntegrationTest
     deployment2.code should be (200) //Created
 
     And("the task eventually fails AGAIN")
-    waitForStatusUpdates("TASK_RUNNING", "TASK_FAILED")
+    waitForStatusUpdates(Seq("TASK_RUNNING", "TASK_FAILED"))
   }
 
   private[this] def createAFailingAppResultingInBackOff(): AppDefinition = {
@@ -116,7 +116,7 @@ class AppDeployIntegrationTest
     result.code should be(201) //Created
 
     And("the task eventually fails")
-    waitForStatusUpdates("TASK_RUNNING", "TASK_FAILED")
+    waitForStatusUpdates(Seq("TASK_RUNNING", "TASK_FAILED"))
 
     And("our app gets a backoff delay")
     WaitTestSupport.waitUntil("queue item", 10.seconds) {
@@ -299,8 +299,11 @@ class AppDeployIntegrationTest
 
     And("a number of failed health events but the deployment does not succeed")
     def interestingEvent() = waitForEventMatching("failed_health_check_event or deployment_success")(callbackEvent =>
-      callbackEvent.eventType == "deployment_success" ||
-        callbackEvent.eventType == "failed_health_check_event"
+      if (callbackEvent.eventType == "deployment_success" ||
+        callbackEvent.eventType == "failed_health_check_event")
+        CallbackMatchSuccess
+      else
+        CallbackMatchFailure(s"eventType was neither {deployment_success,failed_health_check_event}")
     )
 
     for (event <- Iterator.continually(interestingEvent()).take(10)) {
@@ -379,7 +382,8 @@ class AppDeployIntegrationTest
 
     Then("Tasks are killed")
     scaleDown.code should be (200) //OK
-    waitForEventWith("status_update_event", _.info("taskStatus") == "TASK_KILLED")
+    waitForStatusUpdates("TASK_KILLED")
+
     waitForTasks(app.id, 1)
   }
 
@@ -457,7 +461,7 @@ class AppDeployIntegrationTest
     val response = marathon.killTask(app.id, taskId)
     response.code should be (200) withClue s"Response: ${response.entityString}"
 
-    waitForEventWith("status_update_event", _.info("taskStatus") == "TASK_KILLED")
+    waitForStatusUpdates("TASK_KILLED")
 
     Then("All instances of the app get restarted")
     waitForTasks(app.id, 1)
@@ -474,7 +478,7 @@ class AppDeployIntegrationTest
 
     When("a task of an app is killed and scaled")
     marathon.killTask(app.id, taskId, scale = true).code should be (200)
-    waitForEventWith("status_update_event", _.info("taskStatus") == "TASK_KILLED")
+    waitForStatusUpdates("TASK_KILLED")
 
     Then("All instances of the app get restarted")
     waitForTasks(app.id, 1)
@@ -491,8 +495,8 @@ class AppDeployIntegrationTest
     When("all task of an app are killed")
     val response = marathon.killAllTasks(app.id)
     response.code should be (200) withClue s"Response: ${response.entityString}"
-    waitForEventWith("status_update_event", _.info("taskStatus") == "TASK_KILLED")
-    waitForEventWith("status_update_event", _.info("taskStatus") == "TASK_KILLED")
+    waitForStatusUpdates("TASK_KILLED")
+    waitForStatusUpdates("TASK_KILLED")
 
     Then("All instances of the app get restarted")
     waitForTasks(app.id, 2)

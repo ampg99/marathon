@@ -41,10 +41,7 @@ class GracefulTaskKillIntegrationTest extends AkkaIntegrationFunTest with Embedd
     val taskKillSentTimestamp = System.currentTimeMillis()
     marathon.killTask(app.id, taskId).code should be (200)
 
-    waitForEventWith(
-      "status_update_event",
-      _.info("taskStatus") == "TASK_KILLED",
-      maxWait = taskKillGracePeriod.plus(2.seconds))
+    waitForStatusUpdates("TASK_KILLED", maxWait = taskKillGracePeriod.plus(2.seconds))
 
     val taskKilledReceivedTimestamp = System.currentTimeMillis()
     val waitedForTaskKilledEvent = (taskKilledReceivedTimestamp - taskKillSentTimestamp).milliseconds
@@ -73,10 +70,7 @@ class GracefulTaskKillIntegrationTest extends AkkaIntegrationFunTest with Embedd
     val taskKillSentTimestamp = System.currentTimeMillis()
     marathon.killTask(app.id, taskId).code should be (200)
 
-    waitForEventWith(
-      "status_update_event",
-      _.info("taskStatus") == "TASK_KILLED",
-      maxWait = taskKillGracePeriod.plus(2.seconds))
+    waitForStatusUpdates("TASK_KILLED", taskKillGracePeriod.plus(2.seconds))
 
     val taskKilledReceivedTimestamp = System.currentTimeMillis()
     val waitedForTaskKilledEvent = (taskKilledReceivedTimestamp - taskKillSentTimestamp).milliseconds

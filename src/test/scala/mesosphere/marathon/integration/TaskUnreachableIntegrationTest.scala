@@ -52,11 +52,15 @@ class TaskUnreachableIntegrationTest extends AkkaIntegrationFunTest with Embedde
     waitForEventMatching("Task is declared unreachable") { matchEvent("TASK_UNREACHABLE", task) }
 
     And("the task is declared unreachable inactive")
-    waitForEventWith("instance_changed_event", _.info("condition") == "UnreachableInactive")
+    waitForEventWith(
+      "instance_changed_event",
+      CallbackMatchResult(
+        "condition != UnreachableInactive",
+        _.info("condition") == "UnreachableInactive"))
 
     And("a replacement task is started on a different slave")
     mesosCluster.agents(1).start() // Start an alternative slave
-    waitForEventWith("status_update_event", _.info("taskStatus") == "TASK_RUNNING")
+    waitForStatusUpdates("TASK_RUNNING")
     val tasks = marathon.tasks(app.id).value
     tasks should have size 2
     tasks.groupBy(_.state).keySet should be(Set("TASK_RUNNING", "TASK_UNREACHABLE"))
@@ -125,17 +129,15 @@ class TaskUnreachableIntegrationTest extends AkkaIntegrationFunTest with Embedde
     marathon.listDeploymentsForBaseGroup().value should have size 0
   }
 
-  def matchEvent(status: String, task: ITEnrichedTask): CallbackEvent => Boolean = { event =>
-    event.info.get("taskStatus").contains(status) &&
-      event.info.get("taskId").contains(task.id)
-  }
+  def matchEvent(status: String, task: ITEnrichedTask): CallbackEvent => CallbackMatchResult =
+    matchEventTaskStatus(task.id, status)
 
-  private def matchDeploymentSuccess(instanceCount: Int, appId: String): CallbackEvent => Boolean = { event =>
+  private def matchDeploymentSuccess(instanceCount: Int, appId: String) = CallbackMatchResult { event =>
     val infoString = event.info.toString()
     event.eventType == "deployment_success" && infoString.contains(s"instances -> $instanceCount") && matchScaleApplication(infoString, appId)
   }
 
-  private def matchDeploymentStart(appId: String): CallbackEvent => Boolean = { event =>
+  private def matchDeploymentStart(appId: String) = CallbackMatchResult { event =>
     val infoString = event.info.toString()
     event.eventType == "deployment_info" && matchScaleApplication(infoString, appId)
   }

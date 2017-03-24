@@ -2,7 +2,6 @@ package mesosphere.marathon
 package integration
 
 import mesosphere.AkkaIntegrationFunTest
-import mesosphere.marathon.integration.facades.ITEnrichedTask
 import mesosphere.marathon.integration.setup._
 
 import org.scalatest.concurrent.Eventually
@@ -54,7 +53,7 @@ class NetworkPartitionIntegrationTest extends AkkaIntegrationFunTest
     // stop zk
     mesosCluster.agents(0).stop()
     waitForEventMatching("Task is declared unreachable") {
-      matchEvent("TASK_UNREACHABLE", task)
+      matchEventTaskStatus(task.id, "TASK_UNREACHABLE")
     }
 
     And("The task is shows in marathon as unreachable")
@@ -85,12 +84,7 @@ class NetworkPartitionIntegrationTest extends AkkaIntegrationFunTest
 
     Then("The task reappears as running")
     waitForEventMatching("Task is declared running again") {
-      matchEvent("TASK_RUNNING", task)
+      matchEventTaskStatus(task.id, "TASK_RUNNING")
     }
-  }
-
-  def matchEvent(status: String, task: ITEnrichedTask): CallbackEvent => Boolean = { event =>
-    event.info.get("taskStatus").contains(status) &&
-      event.info.get("taskId").contains(task.id)
   }
 }

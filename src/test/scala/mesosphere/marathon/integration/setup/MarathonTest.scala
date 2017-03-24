@@ -185,6 +185,24 @@ trait MarathonTest extends Suite with StrictLogging with ScalaFutures with Befor
   def marathon: MarathonFacade
   def mesos: MesosFacade
   val testBasePath: PathId
+  protected[this] sealed trait CallbackMatchResult
+  protected[this] object CallbackMatchResult {
+    def apply(noMatchReason: String, fn: CallbackEvent => Boolean): CallbackEvent => CallbackMatchResult = { event =>
+      if (fn(event))
+        CallbackMatchSuccess
+      else
+        CallbackMatchFailure(noMatchReason)
+    }
+    def apply(fn: CallbackEvent => Boolean): CallbackEvent => CallbackMatchResult = { event =>
+      if (fn(event))
+        CallbackMatchSuccess
+      else
+        CallbackMatchFailure(s"didn't match the predicate")
+    }
+  }
+
+  protected[this] case object CallbackMatchSuccess extends CallbackMatchResult
+  protected[this] case class CallbackMatchFailure(reason: String) extends CallbackMatchResult
 
   protected val appProxyIds = Lock(mutable.ListBuffer.empty[String])
 
@@ -405,38 +423,60 @@ trait MarathonTest extends Suite with StrictLogging with ScalaFutures with Befor
   }
 
   def waitForDeploymentId(deploymentId: String, maxWait: FiniteDuration = patienceConfig.timeout.toMillis.millis): CallbackEvent = {
-    waitForEventWith("deployment_success", _.id == deploymentId, maxWait)
+    waitForEventWith("deployment_success", { event =>
+      if (event.id == deploymentId)
+        CallbackMatchSuccess
+      else
+        CallbackMatchFailure(s"id ${event.id} != ${deploymentId}")
+    }, maxWait)
   }
 
-  def waitForStatusUpdates(kinds: String*) = kinds.foreach { kind =>
-    logger.info(s"Wait for status update event with kind: $kind")
-    waitForEventWith("status_update_event", _.taskStatus == kind)
-  }
+  def waitForStatusUpdates(kinds: Seq[String], maxWait: FiniteDuration): Unit =
+    kinds.foreach { kind =>
+      logger.info(s"Wait for status update event with kind: $kind")
+      waitForEventWith("status_update_event", { event =>
+        if (event.taskStatus == kind)
+          CallbackMatchSuccess
+        else
+          CallbackMatchFailure(s"taskStatus ${event.taskStatus} != ${kind}")
+      })
+    }
+
+  def waitForStatusUpdates(kinds: Seq[String]): Unit =
+    waitForStatusUpdates(kinds, patienceConfig.timeout.toMillis.millis)
+
+  def waitForStatusUpdates(kind: String, maxWait: FiniteDuration = patienceConfig.timeout.toMillis.millis): Unit =
+    waitForStatusUpdates(Seq(kind), maxWait)
 
   def waitForEvent(
     kind: String,
     maxWait: FiniteDuration = patienceConfig.timeout.toMillis.millis): CallbackEvent =
-    waitForEventWith(kind, _ => true, maxWait)
+    waitForEventWith(kind, _ => CallbackMatchSuccess, maxWait)
 
   def waitForEventWith(
     kind: String,
-    fn: CallbackEvent => Boolean, maxWait: FiniteDuration = patienceConfig.timeout.toMillis.millis): CallbackEvent = {
+    fn: CallbackEvent => CallbackMatchResult,
+    maxWait: FiniteDuration = patienceConfig.timeout.toMillis.millis): CallbackEvent = {
     waitForEventMatching(s"event $kind to arrive", maxWait) { event =>
-      event.eventType == kind && fn(event)
+      if (event.eventType != kind)
+        CallbackMatchFailure(s"${event.eventType} != ${kind}")
+      else
+        fn(event)
     }
   }
 
   def waitForEventMatching(
     description: String,
-    maxWait: FiniteDuration = patienceConfig.timeout.toMillis.millis)(fn: CallbackEvent => Boolean): CallbackEvent = {
+    maxWait: FiniteDuration = patienceConfig.timeout.toMillis.millis)(fn: CallbackEvent => CallbackMatchResult): CallbackEvent = {
     @tailrec
     def matchingEvent: Option[CallbackEvent] = if (events.isEmpty) None else {
       val event = events.poll()
-      if (fn(event)) {
-        Some(event)
-      } else {
-        logger.info(s"Event $event did not match criteria skipping to next event")
-        matchingEvent
+      fn(event) match {
+        case CallbackMatchSuccess =>
+          Some(event)
+        case CallbackMatchFailure(reason) =>
+          logger.info(s"Event $event did not match criteria (${reason}) skipping to next event")
+          matchingEvent
       }
     }
 
@@ -444,6 +484,15 @@ trait MarathonTest extends Suite with StrictLogging with ScalaFutures with Befor
       require(!events.isEmpty, s"No events matched <$description>")
       matchingEvent.getOrElse(throw new RuntimeException("No matching events"))
     }
+  }
+
+  def matchEventTaskStatus(taskId: String, status: String): CallbackEvent => CallbackMatchResult = { event =>
+    if (!event.info.get("taskId").contains(taskId))
+      CallbackMatchFailure(s"Event not for taskId ${taskId}")
+    else if (!event.info.get("taskStatus").contains(status))
+      CallbackMatchFailure(s"taskStatus not ${status}")
+    else
+      CallbackMatchSuccess
   }
 
   /**
@@ -460,7 +509,10 @@ trait MarathonTest extends Suite with StrictLogging with ScalaFutures with Befor
 
       while (eventsToWaitFor.nonEmpty) {
         val event = waitForEventMatching(s"event $eventsToWaitFor to arrive", deadline.timeLeft) { event =>
-          eventsToWaitFor.contains(event.eventType)
+          if (eventsToWaitFor.contains(event.eventType))
+            CallbackMatchSuccess
+          else
+            CallbackMatchFailure(s"""${event.eventType} was not one of {${eventsToWaitFor.mkString(",")}}""")
         }
         receivedEvents += event
 
