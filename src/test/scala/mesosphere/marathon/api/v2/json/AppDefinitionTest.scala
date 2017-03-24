@@ -2,7 +2,7 @@ package mesosphere.marathon
 package api.v2.json
 
 import com.wix.accord._
-import mesosphere.{ UnitTest, ValidationClue }
+import mesosphere.{ UnitTest, ValidationTestLike }
 import mesosphere.marathon.api.JsonTestHelper
 import mesosphere.marathon.api.v2.{ AppNormalization, AppsResource, ValidationHelper }
 import mesosphere.marathon.core.health.{ MarathonHttpHealthCheck, MesosCommandHealthCheck, MesosHttpHealthCheck, PortReference }
@@ -20,7 +20,7 @@ import play.api.libs.json.Json
 import scala.collection.immutable.Seq
 import scala.concurrent.duration._
 
-class AppDefinitionTest extends UnitTest with ValidationClue {
+class AppDefinitionTest extends UnitTest with ValidationTestLike {
   val enabledFeatures = Set("secrets")
   val validAppDefinition = AppDefinition.validAppDefinition(enabledFeatures)(PluginManager.None)
 

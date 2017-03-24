@@ -1,7 +1,7 @@
 package mesosphere.marathon
 package api.v2.json
 
-import mesosphere.{ UnitTest, ValidationClue }
+import mesosphere.{ UnitTest, ValidationTestLike }
 import com.wix.accord.scalatest.ResultMatchers
 import mesosphere.marathon.api.v2.AppNormalization
 import mesosphere.marathon.api.v2.Validation
@@ -23,7 +23,7 @@ class AppDefinitionFormatsTest extends UnitTest
     with HealthCheckFormats
     with Matchers
     with ResultMatchers
-    with ValidationClue {
+    with ValidationTestLike {
 
   import Formats.PathIdFormat
 
