@@ -4,7 +4,16 @@ package integration.facades
 import java.io.File
 import java.util.Date
 
+import akka.NotUsed
 import akka.actor.ActorSystem
+import akka.stream.Materializer
+import akka.stream.scaladsl.Source
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.scala.DefaultScalaModule
+import com.fasterxml.jackson.module.scala.experimental.ScalaObjectMapper
+import de.heikoseeberger.akkasse.EventStreamUnmarshalling
+import akka.actor.ActorSystem
+import akka.stream.scaladsl.Source
 import mesosphere.marathon.core.event.{ EventSubscribers, Subscribe, Unsubscribe }
 import mesosphere.marathon.core.pod.PodDefinition
 import mesosphere.marathon.integration.setup.{ RestResult, SprayHttpResponse }
@@ -20,6 +29,7 @@ import spray.httpx.PlayJsonSupport
 
 import scala.collection.immutable.Seq
 import scala.concurrent.Await.result
+import scala.concurrent.Future
 import scala.concurrent.duration._
 import scala.util.control.NonFatal
 import mesosphere.marathon.stream.Implicits._
@@ -59,6 +69,7 @@ case class ITQueueItem(app: App, count: Int, delay: ITQueueDelay)
 case class ITLaunchQueue(queue: List[ITQueueItem])
 
 case class ITDeployment(id: String, affectedApps: Seq[String], affectedPods: Seq[String])
+case class ITEvent(eventType: String, info: Map[String, Any])
 
 /**
   * The MarathonFacade offers the REST API of a remote marathon instance
@@ -66,7 +77,10 @@ case class ITDeployment(id: String, affectedApps: Seq[String], affectedPods: Seq
   *
   * @param url the url of the remote marathon instance
   */
-class MarathonFacade(val url: String, baseGroup: PathId, waitTime: Duration = 30.seconds)(implicit val system: ActorSystem)
+class MarathonFacade(
+  val url: String, baseGroup: PathId, waitTime: Duration = 30.seconds)(
+  implicit
+  val system: ActorSystem, mat: Materializer)
     extends PlayJsonSupport
     with PodConversion {
   implicit val scheduler = system.scheduler
@@ -116,6 +130,41 @@ class MarathonFacade(val url: String, baseGroup: PathId, waitTime: Duration = 30
 
   def marathonSendReceive: SendReceive = {
     addHeader("Accept", "*/*") ~> sendReceive
+  }
+
+  /**
+    * Connects to the Marathon SSE event stream and returns a Future[Source] of events. The source can only be
+    * materialized once.  The future is completed once a connection the Marathon is established. Marathon events
+    * published before this time may not be delivered.
+    */
+  def events(): Future[Source[ITEvent, NotUsed]] = {
+    // we don't want to lose any events and the default maxEventSize is too small (8K)
+    object Unmarshalling extends EventStreamUnmarshalling {
+      override protected def maxEventSize: Int = Int.MaxValue
+      override protected def maxLineSize: Int = Int.MaxValue
+    }
+    import Unmarshalling.fromEventStream
+    import akka.http.scaladsl.Http
+    import akka.http.scaladsl.client.RequestBuilding.Get
+    import akka.http.scaladsl.model.MediaType
+    import akka.http.scaladsl.model.headers.Accept
+    import akka.http.scaladsl.unmarshalling.Unmarshal
+    import de.heikoseeberger.akkasse.ServerSentEvent
+    val mapper = new ObjectMapper() with ScalaObjectMapper
+    mapper.registerModule(DefaultScalaModule)
+
+    Http().singleRequest(Get(s"$url/v2/events").withHeaders(Accept(MediaType.text("event-stream"))))
+      .flatMap { response =>
+        Unmarshal(response).to[Source[ServerSentEvent, NotUsed]]
+      }
+      .map { stream =>
+        stream.map { event =>
+          event.data.map { d =>
+            val json = mapper.readValue[Map[String, Any]](d) // linter:ignore
+            ITEvent(event.`type`.getOrElse("unknown"), json)
+          }
+        }.filter(_.isDefined).map(_.get)
+      }
   }
 
   //app resource ----------------------------------------------

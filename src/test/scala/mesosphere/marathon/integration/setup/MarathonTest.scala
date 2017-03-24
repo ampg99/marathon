@@ -19,7 +19,7 @@ import com.fasterxml.jackson.module.scala.experimental.ScalaObjectMapper
 import com.typesafe.scalalogging.StrictLogging
 import mesosphere.AkkaUnitTestLike
 import mesosphere.marathon.api.RestResource
-import mesosphere.marathon.integration.facades.{ ITEnrichedTask, ITLeaderResult, MarathonFacade, MesosFacade }
+import mesosphere.marathon.integration.facades.{ ITEnrichedTask, ITEvent, ITLeaderResult, MarathonFacade, MesosFacade }
 import mesosphere.marathon.raml.{ App, AppHealthCheck, AppVolume, PodState, PodStatus, ReadMode }
 import mesosphere.marathon.state.PathId
 import mesosphere.marathon.test.ExitDisabledTest
@@ -30,7 +30,7 @@ import org.scalatest.concurrent.PatienceConfiguration.Timeout
 import org.scalatest.concurrent.{ Eventually, ScalaFutures }
 import org.scalatest.time.{ Milliseconds, Span }
 import org.scalatest.{ BeforeAndAfterAll, Suite }
-import play.api.libs.json.{ JsObject, JsString, Json }
+import play.api.libs.json.{ JsObject, Json }
 
 import scala.annotation.tailrec
 import scala.async.Async.{ async, await }
@@ -204,6 +204,9 @@ trait MarathonTest extends StrictLogging with ScalaFutures with Eventually {
   implicit val scheduler: Scheduler
 
   case class CallbackEvent(eventType: String, info: Map[String, Any])
+  object CallbackEvent {
+    def apply(event: ITEvent): CallbackEvent = CallbackEvent(event.eventType, event.info)
+  }
 
   implicit class CallbackEventToStatusUpdateEvent(val event: CallbackEvent) {
     def taskStatus: String = event.info.get("taskStatus").map(_.toString).getOrElse("")
@@ -228,7 +231,7 @@ trait MarathonTest extends StrictLogging with ScalaFutures with Eventually {
     * Note! This is declared as lazy in order to prevent eager evaluation of values on which it depends
     * We initialize it during the before hook and wait for Marathon to respond.
     */
-  protected[setup] lazy val callbackEndpoint = {
+  protected[setup] lazy val healthEndpoint = {
     val route = {
       import akka.http.scaladsl.server.Directives._
       val mapper = new ObjectMapper() with ScalaObjectMapper
@@ -242,16 +245,7 @@ trait MarathonTest extends StrictLogging with ScalaFutures with Eventually {
         }
       }
 
-      (post & entity(as[Map[String, Any]])) { event =>
-        val kind = event.get("eventType") match {
-          case Some(JsString(s)) => s
-          case Some(s) => s.toString
-          case None => "unknown"
-        }
-        logger.info(s"Received callback event: $kind with props $event")
-        events.add(CallbackEvent(kind, event))
-        complete(HttpResponse(status = StatusCodes.OK))
-      } ~ get {
+      get {
         path("health" / Segments) { uriPath =>
           import PathId._
           val (path, remaining) = uriPath.splitAt(uriPath.size - 2)
@@ -276,8 +270,7 @@ trait MarathonTest extends StrictLogging with ScalaFutures with Eventually {
     }
     val port = PortAllocator.ephemeralPort()
     val server = Http().bindAndHandle(route, "localhost", port).futureValue
-    marathon.subscribe(s"http://localhost:$port")
-    logger.info(s"Listening for events on $port")
+    logger.info(s"Listening for health events on $port")
     server
   }
 
@@ -316,7 +309,7 @@ trait MarathonTest extends StrictLogging with ScalaFutures with Eventually {
     val projectDir = sys.props.getOrElse("user.dir", ".")
     val appMock: File = new File(projectDir, "src/test/python/app_mock.py")
     val cmd = Some(s"""echo APP PROXY $$MESOS_TASK_ID RUNNING; ${appMock.getAbsolutePath} """ +
-      s"""$$PORT0 $appId $versionId http://127.0.0.1:${callbackEndpoint.localAddress.getPort}/health$appId/$versionId""")
+      s"""$$PORT0 $appId $versionId http://127.0.0.1:${healthEndpoint.localAddress.getPort}/health$appId/$versionId""")
 
     App(
       id = appId.toString,
@@ -334,7 +327,7 @@ trait MarathonTest extends StrictLogging with ScalaFutures with Eventually {
     val containerDir = "/opt/marathon"
 
     val cmd = Some("""echo APP PROXY $$MESOS_TASK_ID RUNNING; /opt/marathon/python/app_mock.py """ +
-      s"""$$PORT0 $appId $versionId http://127.0.0.1:${callbackEndpoint.localAddress.getPort}/health$appId/$versionId""")
+      s"""$$PORT0 $appId $versionId http://127.0.0.1:${healthEndpoint.localAddress.getPort}/health$appId/$versionId""")
 
     App(
       id = appId.toString,
@@ -510,8 +503,7 @@ trait MarathonTest extends StrictLogging with ScalaFutures with Eventually {
       val frameworkId = marathon.info.entityJson.as[JsObject].value("frameworkId").as[String]
       mesos.teardown(frameworkId).futureValue
     }
-    Try(marathon.unsubscribe(s"http://localhost:${callbackEndpoint.localAddress.getPort}"))
-    Try(callbackEndpoint.unbind().futureValue)
+    Try(healthEndpoint.unbind().futureValue)
     Try(killAppProxies())
   }
 }
@@ -538,7 +530,7 @@ trait MarathonFixture extends AkkaUnitTestLike with MesosClusterTest with Zookee
       override implicit def patienceConfig: PatienceConfig = PatienceConfig(MarathonFixture.this.patienceConfig.timeout, MarathonFixture.this.patienceConfig.interval)
     }
     try {
-      marathonTest.callbackEndpoint
+      marathonTest.healthEndpoint
       f(marathonServer, marathonTest)
     } finally {
       marathonTest.teardown()
@@ -577,10 +569,30 @@ trait LocalMarathonTest extends ExitDisabledTest with MarathonTest with ScalaFut
   lazy val marathon = marathonServer.client
   lazy val appMock: AppMockFacade = new AppMockFacade()
 
+  /**
+    * Connects to the specified Marathon instance in order to start capturing events.
+    * Blocks until connected the first time.
+    */
+  def startEventSubscriberWithRetry(marathonFacade: MarathonFacade): Future[Done] = {
+    val eventsSource = Retry("events", maxAttempts = 50, maxDelay = 1.second, maxDuration = patienceConfig.timeout) {
+      marathonFacade.events()
+    }.futureValue
+
+    val done = eventsSource.runForeach { event =>
+      logger.info(s"Received callback event: ${event.eventType} with props ${event.info}")
+      events.add(CallbackEvent(event))
+    }
+    done.onComplete {
+      case result =>
+        logger.info(s"SSE Event stream closed: $result")
+    }
+    done
+  }
+
   abstract override def beforeAll(): Unit = {
     super.beforeAll()
     marathonServer.start().futureValue(Timeout(90.seconds))
-    callbackEndpoint
+    startEventSubscriberWithRetry(marathon)
   }
 
   abstract override def afterAll(): Unit = {
@@ -616,6 +628,7 @@ trait MarathonClusterTest extends Suite with StrictLogging with ZookeeperServerT
   override def beforeAll(): Unit = {
     super.beforeAll()
     Future.sequence(additionalMarathons.map(_.start())).futureValue(Timeout(60.seconds))
+    marathonFacades.foreach(startEventSubscriberWithRetry(_))
   }
 
   override def afterAll(): Unit = {
