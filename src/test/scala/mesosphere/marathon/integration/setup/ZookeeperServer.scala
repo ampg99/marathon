@@ -93,9 +93,10 @@ trait ZookeeperServerTest extends BeforeAndAfterAll { this: Suite with ScalaFutu
     zkServer.start()
     val client = CuratorFrameworkFactory.newClient(zkServer.connectUri, retryPolicy)
     client.start()
-    RichCuratorFramework(client).blockUntilConnected(LifecycleState.WatchingJVM)
+    val richClient = RichCuratorFramework(client)
+    richClient.blockUntilConnected(LifecycleState.WatchingJVM)
     val actualClient = namespace.fold(client) { ns =>
-      RichCuratorFramework(client).create(s"/$namespace").futureValue(Timeout(10.seconds))
+      richClient.create(s"/$namespace").futureValue(Timeout(10.seconds))
       client.usingNamespace(ns)
     }
     // don't need to add the actualClient (namespaced clients don't need to be closed)
